@@ -1,6 +1,5 @@
 node_modules
 .next
 .env
-.env.local
 API Guidance
 images
