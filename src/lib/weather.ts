@@ -3,6 +3,7 @@ import {
   OneCallResponse,
   AirPollutionData,
   HistoricalWeather,
+  GeocodingLocation,
 } from './types';
 
 const STANDARD_API_KEY = process.env.NEXT_PUBLIC_OPENWEATHER_API_KEY;
@@ -22,6 +23,22 @@ export async function getCurrentWeather(query: string): Promise<CurrentWeather> 
   }
   
   return res.json();
+}
+
+// Geocoding API for location search
+export async function getGeocodingResults(cityName: string, limit = 5): Promise<GeocodingLocation[]> {
+  if (!cityName.trim()) return [];
+  
+  const res = await fetch(
+    `https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(cityName)}&limit=${limit}&appid=${STANDARD_API_KEY}`
+  );
+  
+  if (!res.ok) {
+    throw new Error('Failed to fetch location suggestions');
+  }
+  
+  const data: GeocodingLocation[] = await res.json();
+  return data;
 }
 
 // One Call API (Current + Forecast)
@@ -130,4 +147,19 @@ export function getAQIDescription(aqi: number): {
         color: 'bg-gray-500',
       };
   }
-} 
+}
+
+// Format location display string
+export function formatLocationName(location: GeocodingLocation): string {
+  const parts = [location.name];
+  
+  if (location.state) {
+    parts.push(location.state);
+  }
+  
+  if (location.country) {
+    parts.push(location.country);
+  }
+  
+  return parts.join(', ');
+}

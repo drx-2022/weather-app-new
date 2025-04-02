@@ -92,6 +92,97 @@ interface DailyForecastResponse {
   list: DailyForecastItem[];
 }
 
+interface StatisticalWeatherData {
+  month: number;
+  day?: number;
+  temp: {
+    record_min: number;
+    record_max: number;
+    average_min: number;
+    average_max: number;
+    median: number;
+    mean: number;
+    p25: number;
+    p75: number;
+    st_dev: number;
+    num: number;
+  };
+  pressure: {
+    min: number;
+    max: number;
+    median: number;
+    mean: number;
+    p25: number;
+    p75: number;
+    st_dev: number;
+    num: number;
+  };
+  humidity: {
+    min: number;
+    max: number;
+    median: number;
+    mean: number;
+    p25: number;
+    p75: number;
+    st_dev: number;
+    num: number;
+  };
+  wind: {
+    min: number;
+    max: number;
+    median: number;
+    mean: number;
+    p25: number;
+    p75: number;
+    st_dev: number;
+    num: number;
+  };
+  precipitation: {
+    min: number;
+    max: number;
+    median: number;
+    mean: number;
+    p25: number;
+    p75: number;
+    st_dev: number;
+    num: number;
+  };
+  clouds: {
+    min: number;
+    max: number;
+    median: number;
+    mean: number;
+    p25: number;
+    p75: number;
+    st_dev: number;
+    num: number;
+  };
+  sunshine_hours?: number; // Only available for monthly aggregation
+}
+
+interface StatisticalWeatherYearlyResponse {
+  cod: number;
+  city_id: number;
+  calctime: number;
+  result: StatisticalWeatherData[];
+}
+
+interface StatisticalWeatherMonthlyResponse {
+  cod: number;
+  city_id: number;
+  calctime: number;
+  result: StatisticalWeatherData;
+}
+
+interface StatisticalWeatherDailyResponse {
+  cod: number;
+  city_id: number;
+  calctime: number;
+  result: StatisticalWeatherData;
+}
+
+export type StatisticalAggregation = 'year' | 'month' | 'day';
+
 export type Units = 'standard' | 'metric' | 'imperial';
 export type Lang = 'en' | 'es' | 'fr' | 'de' | 'it' | 'ru' | 'zh_cn' | 'ja' | 'kr' | 'ar' | 'tr' | 'nl' | 'pl' | 'pt' | 'ro' | 'sv' | 'uk' | 'bg' | 'ca' | 'da' | 'el' | 'fa' | 'fi' | 'gl' | 'he' | 'hi' | 'hu' | 'id' | 'lt' | 'sk' | 'sl' | 'vi' | 'th' | 'zu';
 
@@ -170,4 +261,46 @@ export async function getDailyForecast(
   }
 
   return data;
-} 
+}
+
+export async function getStatisticalWeather(
+  lat: number,
+  lon: number,
+  apiKey: string,
+  options?: {
+    aggregation?: StatisticalAggregation;
+    month?: number; // Required for month and day aggregation
+    day?: number; // Required for day aggregation
+    units?: Units; // Not actually used in the API, just for client display
+  }
+): Promise<StatisticalWeatherYearlyResponse | StatisticalWeatherMonthlyResponse | StatisticalWeatherDailyResponse> {
+  const { aggregation = 'year', month, day, units = 'metric' } = options || {};
+  
+  let url = `https://history.openweathermap.org/data/2.5/aggregated/${aggregation}?lat=${lat}&lon=${lon}`;
+  
+  if (aggregation === 'month' || aggregation === 'day') {
+    if (!month) {
+      throw new Error('Month parameter is required for monthly and daily aggregation');
+    }
+    url += `&month=${month}`;
+    
+    if (aggregation === 'day') {
+      if (!day) {
+        throw new Error('Day parameter is required for daily aggregation');
+      }
+      url += `&day=${day}`;
+    }
+  }
+  
+  url += `&appid=${apiKey}`;
+
+  const response = await fetch(url);
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.message || 'Failed to fetch statistical weather data');
+  }
+
+  // Transform the data to match the expected interface from our components
+  return data;
+}

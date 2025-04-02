@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { SearchInput } from '@/components/SearchInput';
 import { CurrentWeather } from '@/components/weather/CurrentWeather';
@@ -15,15 +15,19 @@ import {
   getOneCallData,
   getAirPollution,
   getHistoricalWeather,
+  getGeocodingResults,
+  formatLocationName,
 } from '@/lib/weather';
 import type {
   CurrentWeather as CurrentWeatherType,
   OneCallResponse,
   AirPollutionData,
   HistoricalWeather as HistoricalWeatherType,
+  GeocodingLocation,
 } from '@/lib/types';
 import { AccumulatedData } from '../components/AccumulatedData';
 import { DailyForecast } from '../components/DailyForecast';
+import { StatisticalWeather } from '../components/weather/StatisticalWeather';
 
 // Import WeatherMap dynamically to avoid SSR issues with Leaflet
 const WeatherMap = dynamic(
@@ -46,7 +50,7 @@ interface SavedLocation {
 }
 
 type Tab = {
-  readonly id: 'current' | 'hourly' | 'daily' | 'air' | 'accumulated';
+  readonly id: 'current' | 'hourly' | 'daily' | 'air' | 'accumulated' | 'alerts' | 'statistics';
   readonly label: string;
 };
 
@@ -56,18 +60,26 @@ const tabs: Tab[] = [
   { id: 'daily', label: '16-Day Forecast' },
   { id: 'air', label: 'Air Quality' },
   { id: 'accumulated', label: 'Accumulated Data' },
+  { id: 'alerts', label: 'Weather Alerts' },
+  { id: 'statistics', label: 'Climate Stats' },
 ];
 
 const STORAGE_KEY = 'weatherAppSavedLocations';
+const DEBOUNCE_MS = 300; // Debounce delay for location search in milliseconds
 
 export default function HomePage() {
   const [citySearch, setCitySearch] = useState('');
   const [loading, setLoading] = useState(false);
+  const [searchLoading, setSearchLoading] = useState(false);
   const [historicalLoading, setHistoricalLoading] = useState(false);
   const [error, setError] = useState('');
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [activeTab, setActiveTab] = useState('current');
   const [savedLocations, setSavedLocations] = useState<SavedLocation[]>([]);
+  const [locationSuggestions, setLocationSuggestions] = useState<GeocodingLocation[]>([]);
+  const [showSavePopup, setShowSavePopup] = useState(false);
+  const [locationName, setLocationName] = useState('');
+  const [selectedLocation, setSelectedLocation] = useState<{lat: number, lon: number} | null>(null);
 
   // Load saved locations from localStorage
   useEffect(() => {
@@ -86,10 +98,65 @@ export default function HomePage() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(savedLocations));
   }, [savedLocations]);
 
+  // Debounced search for location suggestions
+  const debouncedLocationSearch = useCallback(
+    async (searchTerm: string) => {
+      if (searchTerm.trim().length < 2) {
+        setLocationSuggestions([]);
+        return;
+      }
+
+      setSearchLoading(true);
+      try {
+        const suggestions = await getGeocodingResults(searchTerm);
+        setLocationSuggestions(suggestions);
+      } catch (err) {
+        console.error('Failed to fetch location suggestions:', err);
+        setLocationSuggestions([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    },
+    []
+  );
+
+  // Create debounce for search input
+  useEffect(() => {
+    const timerId = setTimeout(() => {
+      debouncedLocationSearch(citySearch);
+    }, DEBOUNCE_MS);
+
+    return () => clearTimeout(timerId);
+  }, [citySearch, debouncedLocationSearch]);
+
+  // Handle input change for search box
+  const handleSearchInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setCitySearch(e.target.value);
+  };
+
+  // Handle selection of a suggestion
+  const handleSuggestionClick = async (location: GeocodingLocation) => {
+    setCitySearch(formatLocationName(location));
+    
+    // Immediately store the selected location before API calls
+    setSelectedLocation({ lat: location.lat, lon: location.lon });
+    
+    // Continue with the full location selection process
+    await handleLocationSelect(location.lat, location.lon);
+  };
+
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
     if (!citySearch.trim()) return;
 
+    // If there are suggestions available, use the first one
+    if (locationSuggestions.length > 0) {
+      const firstLocation = locationSuggestions[0];
+      await handleLocationSelect(firstLocation.lat, firstLocation.lon);
+      return;
+    }
+
+    // Otherwise proceed with the original search by name
     setLoading(true);
     setError('');
     setWeather(null);
@@ -131,10 +198,35 @@ export default function HomePage() {
     }
   }
 
+  // Handle saving location from dialog
+  const saveLocationFromDialog = () => {
+    if (locationName && selectedLocation) {
+      setSavedLocations((prev) => [...prev, {
+        id: `${selectedLocation.lat}-${selectedLocation.lon}`,
+        name: locationName,
+        lat: selectedLocation.lat,
+        lon: selectedLocation.lon,
+      }]);
+    }
+    setShowSavePopup(false);
+    setLocationName('');
+  };
+
+  // Handle keyboard event for saving location
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && locationName.trim()) {
+      saveLocationFromDialog();
+    }
+  };
+
   async function handleLocationSelect(lat: number, lon: number) {
     setLoading(true);
     setError('');
     setWeather(null);
+    // Store selected location
+    setSelectedLocation({ lat, lon });
+    // Clear suggestions after selection
+    setLocationSuggestions([]);
 
     try {
       // Get current weather data with coordinates
@@ -172,6 +264,7 @@ export default function HomePage() {
     }
   }
 
+  // Add a saved location from map or other components
   function handleSaveLocation(location: SavedLocation) {
     setSavedLocations((prev) => [...prev, location]);
   }
@@ -179,6 +272,24 @@ export default function HomePage() {
   function handleDeleteLocation(id: string) {
     setSavedLocations((prev) => prev.filter((loc) => loc.id !== id));
   }
+
+  // Function to check if a location is already saved
+  const isLocationSaved = (lat: number, lon: number) => {
+    return savedLocations.some(loc => 
+      Math.abs(loc.lat - lat) < 0.001 && Math.abs(loc.lon - lon) < 0.001
+    );
+  };
+
+  // Open save dialog for current location
+  const openSaveLocationDialog = () => {
+    if (weather?.current.coord) {
+      setSelectedLocation({
+        lat: weather.current.coord.lat,
+        lon: weather.current.coord.lon
+      });
+      setShowSavePopup(true);
+    }
+  };
 
   async function handleHistoricalDateChange(timestamp: number) {
     if (!weather?.current.coord) return;
@@ -215,19 +326,51 @@ export default function HomePage() {
         <div className="mb-8 space-y-6">
           <SearchInput
             value={citySearch}
-            onChange={(e) => setCitySearch(e.target.value)}
+            onChange={handleSearchInputChange}
             onSubmit={handleSearch}
-            loading={loading}
+            loading={loading || searchLoading}
+            suggestions={locationSuggestions}
+            onSuggestionClick={handleSuggestionClick}
           />
 
           <div className="bg-white rounded-lg p-4 shadow-lg space-y-4">
             <h2 className="text-lg font-medium">Select location from map</h2>
+            {/* Add a key to the WeatherMap component to force remount when needed */}
             <WeatherMap
+              key={`map-${selectedLocation?.lat}-${selectedLocation?.lon}`}
               onLocationSelect={handleLocationSelect}
               apiKey={process.env.NEXT_PUBLIC_OPENWEATHER_API_KEY || ''}
               onSaveLocation={handleSaveLocation}
               savedLocations={savedLocations}
+              selectedLocation={selectedLocation}
             />
+
+            {/* Current Selected Location with Save Button */}
+            {weather && weather.current.name && (
+              <div className="mt-4">
+                <h3 className="text-sm font-medium text-gray-700 mb-2">Current Selected Location</h3>
+                <div className="flex items-center gap-2">
+                  <div className="px-3 py-1 bg-primary-50 rounded-lg border border-primary-100 flex items-center gap-2">
+                    <span className="text-sm text-gray-800 font-medium">
+                      {weather.current.name}
+                      {weather.current.sys.country ? `, ${weather.current.sys.country}` : ''}
+                    </span>
+                    
+                    {!isLocationSaved(weather.current.coord.lat, weather.current.coord.lon) && (
+                      <button
+                        onClick={openSaveLocationDialog}
+                        className="text-primary-500 hover:text-primary-700 focus:outline-none"
+                        title="Save this location"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Saved Locations */}
             <div className="mt-4">
@@ -247,6 +390,7 @@ export default function HomePage() {
                     <button
                       onClick={() => handleDeleteLocation(location.id)}
                       className="text-red-500 hover:text-red-600"
+                      title="Remove location"
                     >
                       ×
                     </button>
@@ -262,6 +406,50 @@ export default function HomePage() {
             </div>
           )}
         </div>
+
+        {/* Save Location Dialog */}
+        {showSavePopup && (
+          <div 
+            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[2000]"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) {
+                setShowSavePopup(false);
+                setLocationName('');
+              }
+            }}
+          >
+            <div className="bg-white rounded-lg p-6 max-w-sm w-full mx-4" onClick={(e) => e.stopPropagation()}>
+              <h3 className="text-lg font-medium mb-4">Save Location</h3>
+              <input
+                type="text"
+                value={locationName}
+                onChange={(e) => setLocationName(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Enter location name"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 mb-4"
+                autoFocus
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => {
+                    setShowSavePopup(false);
+                    setLocationName('');
+                  }}
+                  className="px-4 py-2 text-gray-600 hover:text-gray-900"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={saveLocationFromDialog}
+                  className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600"
+                  disabled={!locationName.trim()}
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {weather && (
           <div className="space-y-6">
@@ -303,6 +491,14 @@ export default function HomePage() {
               <WeatherAlerts alerts={weather.forecast.alerts} />
             )}
 
+            {activeTab === 'statistics' && (
+              <StatisticalWeather
+                lat={weather.current.coord?.lat || 0}
+                lon={weather.current.coord?.lon || 0}
+                apiKey={process.env.NEXT_PUBLIC_OPENWEATHER_API_KEY || ''}
+              />
+            )}
+
             {activeTab === 'historical' && weather.historical && (
               <HistoricalWeather
                 data={weather.historical}
@@ -322,4 +518,4 @@ export default function HomePage() {
       </div>
     </main>
   );
-} 
+}
